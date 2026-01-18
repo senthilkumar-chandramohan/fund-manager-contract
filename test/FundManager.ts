@@ -34,7 +34,7 @@ describe("FundManager", function () {
 
   async function deployFundManagerFixture() {
     // Contracts are deployed using the first signer/account by default
-    const [owner, otherAccount] = await hre.ethers.getSigners();
+    const [owner, otherAccount, beneficiary1, beneficiary2, beneficiary3] = await hre.ethers.getSigners();
 
     // Deploy a mock ERC20 token for testing
     const ERC20Mock = await hre.ethers.getContractFactory("ERC20Mock");
@@ -46,9 +46,18 @@ describe("FundManager", function () {
     await (mockToken as any).mint(owner.address, tokenAmount);
     await (mockToken as any).mint(otherAccount.address, tokenAmount);
 
+    const beneficiaryAddresses = [
+      beneficiary1.address,
+      beneficiary2.address,
+      beneficiary3.address
+    ];
+    const sharePercentages = [
+      BigInt(5000), // 50%
+      BigInt(3000), // 30%
+      BigInt(2000)  // 20%
+    ];
+
     const {
-      beneficiaryAddresses,
-      sharePercentages,
       baseReleaseAmount,
       releaseInterval,
       minimumBalance,
@@ -72,7 +81,7 @@ describe("FundManager", function () {
       emergencyWithdrawalAllowed
     );
     
-    return { fundManager, mockToken, owner, otherAccount }; 
+    return { fundManager, mockToken, owner, otherAccount, beneficiary1, beneficiary2, beneficiary3, beneficiaryAddresses, sharePercentages }; 
   }
 
   describe("Deployment", function () {
@@ -229,17 +238,51 @@ describe("FundManager", function () {
       expect(walletBalance).to.equals(BigInt(sendAmount));
     });
 
-    it("Should emit an event on emergency withdrawals and purge balance", async function () {
-      const { fundManager } = await loadFixture(
-        deployFundManagerFixture
-      );
+    it("Should distribute funds correctly to beneficiaries on emergency withdrawal", async function () {
+      const {
+        fundManager,
+        mockToken,
+        owner,
+        beneficiary1,
+        beneficiary2,
+        beneficiary3,
+        sharePercentages
+      } = await loadFixture(deployFundManagerFixture);
 
-      await expect(fundManager.executeEmergencyWithdrawal())
-        .to.emit(fundManager, "EmergencyWithdrawalExecuted");
-        //.withArgs(lockedAmount, anyValue); // We accept any value as `when` arg
+      const sendAmount = hre.ethers.parseUnits("10000", 6); // 10,000 PYUSD
+
+      // Approve FundManager to spend tokens
+      const erc20Token = mockToken as any;
+      await erc20Token.approve(await fundManager.getAddress(), sendAmount);
+
+      // Deposit funds
+      await fundManager.connect(owner).receiveFund(sendAmount, "Test note");
+
+      // Record initial balances of beneficiaries
+      const initialBalance1 = await erc20Token.balanceOf(beneficiary1.address);
+      const initialBalance2 = await erc20Token.balanceOf(beneficiary2.address);
+      const initialBalance3 = await erc20Token.balanceOf(beneficiary3.address);
+
+      // Execute emergency withdrawal
+      await fundManager.executeEmergencyWithdrawal();
 
       const walletBalance = await fundManager.getWalletBalance();
       expect(walletBalance).to.equals(BigInt(0));
+
+      // Check final balances
+      const finalBalance1 = await erc20Token.balanceOf(beneficiary1.address);
+      const finalBalance2 = await erc20Token.balanceOf(beneficiary2.address);
+      const finalBalance3 = await erc20Token.balanceOf(beneficiary3.address);
+
+      // Expected shares
+      const expectedShare1 = (BigInt(sendAmount) * sharePercentages[0]) / BigInt(10000);
+      const expectedShare2 = (BigInt(sendAmount) * sharePercentages[1]) / BigInt(10000);
+      const expectedShare3 = (BigInt(sendAmount) * sharePercentages[2]) / BigInt(10000);
+
+      // Verify each beneficiary received correct share
+      expect(finalBalance1 - initialBalance1).to.equal(expectedShare1);
+      expect(finalBalance2 - initialBalance2).to.equal(expectedShare2);
+      expect(finalBalance3 - initialBalance3).to.equal(expectedShare3);
     });
   });
 });
