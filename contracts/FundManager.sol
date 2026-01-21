@@ -17,27 +17,43 @@ contract FundManager is Pausable, ReentrancyGuard {
         uint256 sharePercentage; // In basis points (10000 = 100%)
     }
 
+    struct EmergencyWithdrawal {
+        string status;
+        uint256 amount;        
+    }
+
+    struct EmergencyWithdrawalConfig {
+        uint256 requiredNumberofApprovals;
+        uint256 timesAllowed;
+        uint256 limitPerWithdrawal;
+        uint256 totalLimit;
+    }
+
     // Beneficiary config
     Beneficiary[] public beneficiaries;
 
     // Token address
-    IERC20 public immutable pyusdToken;
+    IERC20 public immutable token;
 
     // Fund release parameters
-    uint256 public baseReleaseAmount; // In fiat currency with 6 decimals (e.g., 1234000000 = $1234)
+    uint256 public releaseAmount; // In fiat currency with 6 decimals (e.g., 1234000000 = $1234)
     uint256 public immutable releaseInterval; // In seconds (default 30 days)
-    uint256 public lastReleaseTime;
-    uint256 public lastReleaseAmount;
-    uint256 public immutable minimumBalance;
     uint256 public immutable fundMaturityDate; // epoch time of fund's maturity date after which payout is allowed.
 
-    // Emergency withdrawal config
-    bool public immutable emergencyWithdrawalAllowed;
-    bool public isEmergencyWithdrawn;
-    
+    // Emergency withdrawal
+    EmergencyWithdrawalConfig public emergencyWithdrawalConfig;
+    mapping(bytes32 => EmergencyWithdrawal) public emergencyWithdrawals;
+    mapping(bytes32 => uint256) public emergencyWithdrawalApprovals;
+    mapping(bytes32 => mapping(address => bool)) public hasApprovedEmergencyWithdrawal;
+    uint256 public totalWithdrawnAmount;
+
     // Set cause metadata
     string public causeName;
     string public causeDescription;
+
+    // Multi-sig governance
+    address[] public governors;
+    mapping(address => bool) public isGovernor;
 
     event FundReceived(
         address indexed sender,
@@ -45,6 +61,17 @@ contract FundManager is Pausable, ReentrancyGuard {
         address indexed token,
         uint256 amount,
         uint256 timestamp
+    );
+
+    event EmergencyWithdrawalInitiated(
+        bytes32 indexed withdrawalId,
+        address indexed initiator
+    );
+
+    event EmergencyWithdrawalApproved(
+        bytes32 indexed withdrawalId,
+        address indexed governor,
+        uint256 currentApprovals
     );
 
     event EmergencyWithdrawalExecuted(
@@ -57,20 +84,55 @@ contract FundManager is Pausable, ReentrancyGuard {
     error InvalidBeneficiaryShares();
     error InvalidTotalSharePercentage();
     error ZeroAmount();
+    error InvalidGovernors();
+    error NotGovernor();
+    error AlreadyApproved();
+    error InsufficientTokens();
+    error WithdrawalAmountBreachesLimit();
+    error TotalWithdrawalLimitBreached();
+
+     // ============ Modifiers ============
+
+    modifier onlyGovernor() {
+        if (!isGovernor[msg.sender]) revert NotGovernor();
+        _;
+    }
+
+    modifier withdrawalLimitNotBreached(uint256 _amount) {
+        if (_amount > emergencyWithdrawalConfig.limitPerWithdrawal) {
+            revert WithdrawalAmountBreachesLimit();
+        }
+
+        if (totalWithdrawnAmount + _amount > emergencyWithdrawalConfig.totalLimit) {
+            revert TotalWithdrawalLimitBreached();
+        }
+
+        _;
+    }
+
+    modifier tokenBalanceIsSufficient(uint256 _amount) {
+        uint256 tokenBalance = token.balanceOf(address(this));
+        if (_amount > tokenBalance) {
+            revert InsufficientTokens();
+        }
+        _;
+    }
 
     constructor (
         address[] memory _beneficiaryAddresses,
         uint256[] memory _sharePercentages,
-        address _pyusdTokenAddress,
-        uint256 _baseReleaseAmount,
+        address _tokenAddress,
+        uint256 _releaseAmount,
         uint256 _releaseInterval,
-        uint256 _minimumBalance,
         uint256 _fundMaturityDate,
         string memory _causeName,
         string memory _causeDescription,
-        bool _emergencyWithdrawalAllowed
+        address[] memory _governors,
+        uint256 _requiredNumberofApprovalsForWithdrawal,
+        uint256 _timesEmergencyWithdrawalAllowed,
+        uint256 _limitPerEmergencyWithdrawal,
+        uint256 _totalLimitForEmergencyWithdrawal
     ) {
-
         if (block.timestamp >= _fundMaturityDate) {
             revert InvalidMaturityDate();
         }
@@ -98,48 +160,123 @@ contract FundManager is Pausable, ReentrancyGuard {
         if (_totalShares != 10000) revert InvalidTotalSharePercentage();
 
         // Set token address
-        pyusdToken = IERC20(_pyusdTokenAddress);
+        token = IERC20(_tokenAddress);
 
         // Set fund release parameters
-        baseReleaseAmount = _baseReleaseAmount; // In fiat currency with 6 decimals (e.g., 1234000000 = $1234)
+        releaseAmount = _releaseAmount; // In fiat currency with 6 decimals (e.g., 1234000000 = $1234)
         releaseInterval = _releaseInterval; // In seconds (default 30 days)
-        minimumBalance = _minimumBalance;
         fundMaturityDate = _fundMaturityDate;
 
         // Set cause metadata
         causeName = _causeName;
         causeDescription = _causeDescription;
 
+        // Setup multi-sig governance
+        if (_governors.length == 0 || _requiredNumberofApprovalsForWithdrawal == 0 || 
+            _requiredNumberofApprovalsForWithdrawal > _governors.length) {
+            revert InvalidGovernors();
+        }
+
+        for (uint256 i = 0; i < _governors.length; i++) {
+            if (_governors[i] == address(0) || isGovernor[_governors[i]]) {
+                revert InvalidGovernors();
+            }
+            governors.push(_governors[i]);
+            isGovernor[_governors[i]] = true;
+        }
+
         // Set emergency withdrawal config
-        emergencyWithdrawalAllowed = _emergencyWithdrawalAllowed;
-        isEmergencyWithdrawn = false;
+        emergencyWithdrawalConfig.requiredNumberofApprovals = _requiredNumberofApprovalsForWithdrawal;
+        emergencyWithdrawalConfig.timesAllowed = _timesEmergencyWithdrawalAllowed;
+        emergencyWithdrawalConfig.limitPerWithdrawal = _limitPerEmergencyWithdrawal;
+        emergencyWithdrawalConfig.totalLimit = _totalLimitForEmergencyWithdrawal;
     }
 
     function receiveFund(uint256 _amount, string memory note) external nonReentrant whenNotPaused {
         if (_amount == 0) revert ZeroAmount();
 
-        pyusdToken.safeTransferFrom(msg.sender, address(this), _amount);
-        emit FundReceived(msg.sender, note, address(pyusdToken), _amount, block.timestamp);
+        token.safeTransferFrom(msg.sender, address(this), _amount);
+        emit FundReceived(msg.sender, note, address(token), _amount, block.timestamp);
     }
 
-    function executeEmergencyWithdrawal() external {
-        uint256 pyusdBalance = pyusdToken.balanceOf(address(this));
+    // ============ Emergency Withdrawal Functions ============
+    /**
+     * @notice Initiate emergency withdrawal (requires multi-sig)
+     * @return withdrawalId Unique ID for this withdrawal request
+     */
+    function initiateEmergencyWithdrawal(uint256 _amount)
+        external
+        onlyGovernor
+        nonReentrant
+        withdrawalLimitNotBreached(_amount)
+        returns (bytes32 withdrawalId) 
+    {
+        withdrawalId = keccak256(abi.encodePacked(
+            "EMERGENCY_WITHDRAWAL",
+            block.timestamp,
+            msg.sender
+        ));
 
+        EmergencyWithdrawal memory withdrawal = EmergencyWithdrawal({
+            status: "INITIATED",
+            amount: _amount
+        });
+        
+        emergencyWithdrawals[withdrawalId] = withdrawal;
+        emergencyWithdrawalApprovals[withdrawalId] = 1;
+        hasApprovedEmergencyWithdrawal[withdrawalId][msg.sender] = true;
+
+        emit EmergencyWithdrawalInitiated(withdrawalId, msg.sender);
+        emit EmergencyWithdrawalApproved(withdrawalId, msg.sender, 1);
+    }
+
+    /**
+     * @notice Approve emergency withdrawal
+     * @param withdrawalId ID of the withdrawal request
+     */
+    function approveEmergencyWithdrawal(bytes32 withdrawalId) 
+        external 
+        onlyGovernor
+    {
+        if (hasApprovedEmergencyWithdrawal[withdrawalId][msg.sender]) {
+            revert AlreadyApproved();
+        }
+
+        hasApprovedEmergencyWithdrawal[withdrawalId][msg.sender] = true;
+        emergencyWithdrawalApprovals[withdrawalId]++;
+
+        emit EmergencyWithdrawalApproved(
+            withdrawalId,
+            msg.sender,
+            emergencyWithdrawalApprovals[withdrawalId]
+        );
+    }
+
+    function executeEmergencyWithdrawal(bytes32 withdrawalId)
+        external
+        onlyGovernor
+        nonReentrant
+        withdrawalLimitNotBreached(emergencyWithdrawals[withdrawalId].amount)
+        tokenBalanceIsSufficient(emergencyWithdrawals[withdrawalId].amount)
+    {
+        uint256 amount = emergencyWithdrawals[withdrawalId].amount;
+        
         for (uint256 i = 0; i < beneficiaries.length; i++) {
             Beneficiary memory beneficiary = beneficiaries[i];
 
-            uint256 share = (pyusdBalance * beneficiary.sharePercentage) / 10000;
+            uint256 share = (amount * beneficiary.sharePercentage) / 10000;
 
             if (share > 0) {
-                pyusdToken.safeTransfer(beneficiary.wallet, share);
+                token.safeTransfer(beneficiary.wallet, share);
             }
         }
 
-        emit EmergencyWithdrawalExecuted(pyusdBalance, block.timestamp);
+        totalWithdrawnAmount+= amount;
+        emit EmergencyWithdrawalExecuted(amount, block.timestamp);
     }
 
     function getWalletBalance() external view returns (uint256) {
-        return pyusdToken.balanceOf(address(this));
+        return token.balanceOf(address(this));
     }
 
     /**

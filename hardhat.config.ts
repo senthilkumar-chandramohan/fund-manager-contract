@@ -6,7 +6,16 @@ const INFURA_API_KEY = "d0c6d0a0d17d41aa9967ad0a0f438570";
 const SEPOLIA_WALLET_PRIVATE_KEY = "98aef9b63894fae74ac3818e3c987391e75114688644841e2c405fdc9d0ca2df";
 
 const config: HardhatUserConfig = {
-  solidity: "0.8.28",
+  solidity: {
+    version: "0.8.28",
+    settings: {
+      viaIR: true,
+      optimizer: {
+        enabled: true,
+        runs: 200,
+      },
+    },
+  },
   etherscan: {
     apiKey: ETHERSCAN_API_KEY,
   },
