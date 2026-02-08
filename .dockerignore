@@ -1,0 +1,16 @@
+.dockerignore
+node_modules
+npm-debug.log
+dist
+artifacts
+typechain-types
+cache
+.git
+.gitignore
+.env
+.env.example
+README.md
+*.md
+test/
+ignition/
+hardhat.config.ts

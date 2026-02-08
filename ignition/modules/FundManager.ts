@@ -19,7 +19,7 @@ const _pyusdTokenAddress = "0xCaC524BcA292aaade2DF8A05cC58F0a65B1B3bB9";
 
 const _baseReleaseAmount = BigInt(1000000);
 const _releaseInterval = BigInt(30 * 24 * 60 * 60); // 30 days in seconds
-const _fundMaturityDate = BigInt(1768003200);
+const _fundMaturityDate = BigInt(1769904000);
 const _causeName = "Test Fund";
 const _causeDescription = "This is a contract to test FundManager template";
 

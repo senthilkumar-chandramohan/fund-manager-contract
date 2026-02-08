@@ -1,0 +1,29 @@
+GET http://localhost:4000/
+
+###
+POST http://localhost:4000/deploy
+Content-Type: application/json
+
+{
+    "beneficiaryAddresses": [
+        "0xbDA5747bFD65F08deb54cb465eB87D40e51B197E",
+        "0xdD2FD4581271e230360230F9337D5c0430Bf44C0",
+        "0x8626f6940E2eb28930eFb4CeF49B2d1F2C9C1199"
+      ],
+      "sharePercentages": [5000, 3000, 2000],
+      "tokenAddress": "0xCaC524BcA292aaade2DF8A05cC58F0a65B1B3bB9",
+      "releaseAmount": "1000000",
+      "releaseInterval": "2678400",
+      "fundMaturityDate": "1772496000",
+      "causeName": "Senthil's Pension Fund",
+      "causeDescription": "A fund dedicated to supporting Senthil et. al.",
+      "governors": [
+        "0x1234567890123456789012345678901234567890",
+        "0x0987654321098765432109876543210987654321",
+        "0xabcdefabcdefabcdefabcdefabcdefabcdefabcd"
+      ],
+      "requiredNumberofApprovals": "2",
+      "timesEmergencyWithdrawalAllowed": "5",
+      "limitPerEmergencyWithdrawal": "1000000000",
+      "totalLimitForEmergencyWithdrawal": "5000000000"
+}
