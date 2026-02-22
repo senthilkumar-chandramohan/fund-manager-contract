@@ -5,11 +5,18 @@ import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import "@openzeppelin/contracts/utils/Pausable.sol";
+import "@openzeppelin/contracts/access/Ownable.sol";
 
 // Uncomment this line to use console.log
 import "hardhat/console.sol";
 
-contract FundManager is Pausable, ReentrancyGuard {
+// Investment contract interface
+interface IInvestmentContract {
+    function invest(address sender, uint256 amount) external;
+    function withdraw(address sender) external returns (uint256);
+}
+
+contract FundManager is Pausable, ReentrancyGuard, Ownable {
     using SafeERC20 for IERC20;
 
     struct Beneficiary {
@@ -90,6 +97,9 @@ contract FundManager is Pausable, ReentrancyGuard {
     error InsufficientTokens();
     error WithdrawalAmountBreachesLimit();
     error TotalWithdrawalLimitBreached();
+    error InvalidInvestmentContract();
+    error InvestmentFailed();
+    error WithdrawalFailed();
 
      // ============ Modifiers ============
 
@@ -132,7 +142,7 @@ contract FundManager is Pausable, ReentrancyGuard {
         uint256 _timesEmergencyWithdrawalAllowed,
         uint256 _limitPerEmergencyWithdrawal,
         uint256 _totalLimitForEmergencyWithdrawal
-    ) {
+    ) Ownable(msg.sender) {
         if (block.timestamp >= _fundMaturityDate) {
             revert InvalidMaturityDate();
         }
@@ -291,5 +301,67 @@ contract FundManager is Pausable, ReentrancyGuard {
      */
     function getAllBeneficiaries() external view returns (Beneficiary[] memory) {
         return beneficiaries;
+    }
+
+    // ============ Investment Functions ============
+    /**
+     * @notice Invest funds into an investment contract
+     * @param _investmentContract Address of the investment contract
+     * @param _amount Amount of tokens to invest
+     */
+    function investFund(address _investmentContract, uint256 _amount)
+        external
+        onlyOwner
+        nonReentrant
+        whenNotPaused
+    {
+        if (_investmentContract == address(0)) {
+            revert InvalidInvestmentContract();
+        }
+
+        if (_amount == 0) {
+            revert ZeroAmount();
+        }
+
+        uint256 tokenBalance = token.balanceOf(address(this));
+        if (_amount > tokenBalance) {
+            revert InsufficientTokens();
+        }
+
+        // Approve investment contract to spend tokens
+        // token.approve(_investmentContract, _amount);
+        require(token.approve(_investmentContract, _amount), "Token approval failed");
+
+        // Call invest function on investment contract
+        try IInvestmentContract(_investmentContract).invest(address(this), _amount) {
+            // Investment successful
+        } catch {
+            revert InvestmentFailed();
+        }
+    }
+
+    /**
+     * @notice Withdraw funds from an investment contract
+     * @param _investmentContract Address of the investment contract
+     * @return withdrawnAmount Amount of tokens withdrawn
+     */
+    function withdrawFund(address _investmentContract)
+        external
+        onlyOwner
+        nonReentrant
+        returns (uint256 withdrawnAmount)
+    {
+        if (_investmentContract == address(0)) {
+            revert InvalidInvestmentContract();
+        }
+
+        // Call withdraw function on investment contract
+        try IInvestmentContract(_investmentContract).withdraw(address(this)) returns (uint256 amount) {
+            withdrawnAmount = amount;
+        } catch {
+            revert WithdrawalFailed();
+        }
+
+        return withdrawnAmount;
     }
 }
