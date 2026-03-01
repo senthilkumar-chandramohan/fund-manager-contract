@@ -14,7 +14,6 @@ interface DeploymentRequest {
   sharePercentages: number[];
   tokenAddress: string;
   releaseAmount: string;
-  releaseInterval: string;
   fundMaturityDate: string;
   causeName: string;
   causeDescription: string;
@@ -96,7 +95,6 @@ function validateDeploymentParams(params: DeploymentRequest): string | null {
  *   sharePercentages: number[]
  *   tokenAddress: string
  *   releaseAmount: string
- *   releaseInterval: string
  *   fundMaturityDate: string (unix timestamp)
  *   causeName: string
  *   causeDescription: string
@@ -164,7 +162,6 @@ app.post('/deploy', async (req: Request, res: Response): Promise<void> => {
       params.sharePercentages.map((p) => BigInt(p)),
       params.tokenAddress,
       BigInt(params.releaseAmount),
-      BigInt(params.releaseInterval),
       BigInt(params.fundMaturityDate),
       params.causeName,
       params.causeDescription,
@@ -230,7 +227,6 @@ app.get('/', (req: Request, res: Response): void => {
           sharePercentages: 'number[] - Array of share percentages in basis points (10000 = 100%)',
           tokenAddress: 'string - ERC20 token contract address',
           releaseAmount: 'string - Initial release amount in fiat currency with 6 decimals',
-          releaseInterval: 'string - Release interval in seconds',
           fundMaturityDate: 'string - Fund maturity date as unix timestamp',
           causeName: 'string - Name of the cause/fund',
           causeDescription: 'string - Description of the cause/fund',
@@ -250,7 +246,6 @@ app.get('/', (req: Request, res: Response): void => {
           sharePercentages: [5000, 5000],
           tokenAddress: '0xCaC524BcA292aaade2DF8A05cC58F0a65B1B3bB9',
           releaseAmount: '1000000',
-          releaseInterval: '2592000', // 30 days
           fundMaturityDate: '1769904000',
           causeName: 'Test Fund',
           causeDescription: 'This is a test fund',

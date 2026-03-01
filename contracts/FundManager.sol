@@ -44,7 +44,6 @@ contract FundManager is Pausable, ReentrancyGuard, Ownable {
 
     // Fund release parameters
     uint256 public releaseAmount; // In fiat currency with 6 decimals (e.g., 1234000000 = $1234)
-    uint256 public immutable releaseInterval; // In seconds (default 30 days)
     uint256 public immutable fundMaturityDate; // epoch time of fund's maturity date after which payout is allowed.
 
     // Emergency withdrawal
@@ -86,8 +85,26 @@ contract FundManager is Pausable, ReentrancyGuard, Ownable {
         uint256 timestamp
     );
 
+    event FundReleased(
+        uint256 totalAmount,
+        uint256 timestamp
+    );
+
+    event InvestmentMade(
+        address indexed investmentContract,
+        uint256 amount,
+        uint256 timestamp
+    );
+
+    event InvestmentWithdrawn(
+        address indexed investmentContract,
+        uint256 amount,
+        uint256 timestamp
+    );
+
     // Errors
     error InvalidMaturityDate();
+    error FundNotMatured();
     error InvalidBeneficiaryShares();
     error InvalidTotalSharePercentage();
     error ZeroAmount();
@@ -133,7 +150,6 @@ contract FundManager is Pausable, ReentrancyGuard, Ownable {
         uint256[] memory _sharePercentages,
         address _tokenAddress,
         uint256 _releaseAmount,
-        uint256 _releaseInterval,
         uint256 _fundMaturityDate,
         string memory _causeName,
         string memory _causeDescription,
@@ -174,7 +190,6 @@ contract FundManager is Pausable, ReentrancyGuard, Ownable {
 
         // Set fund release parameters
         releaseAmount = _releaseAmount; // In fiat currency with 6 decimals (e.g., 1234000000 = $1234)
-        releaseInterval = _releaseInterval; // In seconds (default 30 days)
         fundMaturityDate = _fundMaturityDate;
 
         // Set cause metadata
@@ -202,11 +217,40 @@ contract FundManager is Pausable, ReentrancyGuard, Ownable {
         emergencyWithdrawalConfig.totalLimit = _totalLimitForEmergencyWithdrawal;
     }
 
-    function receiveFund(uint256 _amount, string memory note) external nonReentrant whenNotPaused {
+    function contributeFund(uint256 _amount, string memory note) external nonReentrant whenNotPaused {
         if (_amount == 0) revert ZeroAmount();
 
         token.safeTransferFrom(msg.sender, address(this), _amount);
         emit FundReceived(msg.sender, note, address(token), _amount, block.timestamp);
+    }
+
+    function releaseRegularPension(uint256 _inflationCoefficient) external nonReentrant whenNotPaused {
+        // Check if fund has matured
+        if (block.timestamp < fundMaturityDate) {
+            revert FundNotMatured();
+        }
+
+        // Calculate final amount to be released
+        uint256 finalAmount = releaseAmount * _inflationCoefficient;
+
+        // Check if contract wallet balance is greater than final amount
+        uint256 tokenBalance = token.balanceOf(address(this));
+        if (tokenBalance < finalAmount) {
+            revert InsufficientTokens();
+        }
+
+        // Calculate split and transfer to each beneficiary
+        for (uint256 i = 0; i < beneficiaries.length; i++) {
+            Beneficiary memory beneficiary = beneficiaries[i];
+            
+            uint256 share = (finalAmount * beneficiary.sharePercentage) / 10000;
+
+            if (share > 0) {
+                token.safeTransfer(beneficiary.wallet, share);
+            }
+        }
+
+        emit FundReleased(finalAmount, block.timestamp);
     }
 
     // ============ Emergency Withdrawal Functions ============
@@ -329,12 +373,12 @@ contract FundManager is Pausable, ReentrancyGuard, Ownable {
         }
 
         // Approve investment contract to spend tokens
-        // token.approve(_investmentContract, _amount);
-        require(token.approve(_investmentContract, _amount), "Token approval failed");
+        // require(token.approve(_investmentContract, _amount), "Token approval failed");
+        token.forceApprove(_investmentContract, _amount);
 
         // Call invest function on investment contract
         try IInvestmentContract(_investmentContract).invest(address(this), _amount) {
-            // Investment successful
+            emit InvestmentMade(_investmentContract, _amount, block.timestamp);
         } catch {
             revert InvestmentFailed();
         }
@@ -345,7 +389,7 @@ contract FundManager is Pausable, ReentrancyGuard, Ownable {
      * @param _investmentContract Address of the investment contract
      * @return withdrawnAmount Amount of tokens withdrawn
      */
-    function withdrawFund(address _investmentContract)
+    function withdrawInvestment(address _investmentContract)
         external
         onlyOwner
         nonReentrant
@@ -355,13 +399,22 @@ contract FundManager is Pausable, ReentrancyGuard, Ownable {
             revert InvalidInvestmentContract();
         }
 
+        // Get balance before withdrawal
+        uint256 balanceBefore = token.balanceOf(address(this));
+
         // Call withdraw function on investment contract
-        try IInvestmentContract(_investmentContract).withdraw(address(this)) returns (uint256 amount) {
-            withdrawnAmount = amount;
-        } catch {
+        // The investment contract should transfer tokens back to this contract
+        IInvestmentContract(_investmentContract).withdraw(address(this));
+
+        // Get balance after withdrawal to verify tokens were received
+        uint256 balanceAfter = token.balanceOf(address(this));
+        withdrawnAmount = balanceAfter - balanceBefore;
+
+        if (withdrawnAmount == 0) {
             revert WithdrawalFailed();
         }
 
+        emit InvestmentWithdrawn(_investmentContract, withdrawnAmount, block.timestamp);
         return withdrawnAmount;
     }
 }
